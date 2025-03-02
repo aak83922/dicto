@@ -16,6 +16,9 @@ const io = new Server(server, {
   },
   pingTimeout: 60000, // Increase ping timeout to 60 seconds
   pingInterval: 25000, // Ping clients every 25 seconds
+  transports: ['websocket', 'polling'], // Support both WebSocket and polling
+  maxHttpBufferSize: 1e8, // Increase buffer size for larger media streams
+  connectTimeout: 45000 // Increase connection timeout
 });
 
 // Serve static files from the dist directory

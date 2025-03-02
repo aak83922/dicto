@@ -17,6 +17,9 @@ const io = new Server(server, {
   },
   pingTimeout: 60000, // Increase ping timeout to 60 seconds
   pingInterval: 25000, // Ping clients every 25 seconds
+  transports: ['websocket', 'polling'], // Support both WebSocket and polling
+  maxHttpBufferSize: 1e8, // Increase buffer size for larger media streams
+  connectTimeout: 45000 // Increase connection timeout
 });
 
 // Serve static files from the dist directory
@@ -139,7 +142,7 @@ server.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
   
   try {
-    // Start a tunnel to your local server without setting auth token
+    // Start a tunnel to your local server
     const url = await ngrok.connect({
       addr: PORT,
       region: 'us', // You can change this to a region closer to you if needed

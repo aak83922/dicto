@@ -7,6 +7,7 @@
     "dev": "concurrently \"vite\" \"node server.js\"",
     "build": "vite build",
     "start": "node server.js",
+    "tunnel": "node ngrok-server.js",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -17,7 +18,8 @@
     "socket.io-client": "^4.7.4",
     "uuid": "^9.0.1",
     "express": "^4.18.3",
-    "socket.io": "^4.7.4"
+    "socket.io": "^4.7.4",
+    "ngrok": "^5.0.0-beta.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.9.1",

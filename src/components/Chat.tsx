@@ -29,7 +29,8 @@ export default function Chat({ mode, onDisconnect, roomId }: ChatProps) {
   const peerConnection = useRef<RTCPeerConnection | null>(null);
   const connectionTimeout = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttempts = useRef(0);
-  const maxReconnectAttempts = 3;
+  const maxReconnectAttempts = 5; // Increased from 3 to 5
+  const connectionTimeoutMs = 10000; // Reduced from 15000 to 10000 for faster feedback
 
   useEffect(() => {
     // Listen for incoming messages
@@ -101,20 +102,23 @@ export default function Chat({ mode, onDisconnect, roomId }: ChatProps) {
       // Set a timeout to detect if connection fails
       connectionTimeout.current = setTimeout(() => {
         if (videoStatus === 'connecting') {
+          console.log('Connection timeout reached, attempting auto-reconnect');
           setVideoStatus('failed');
+          reconnectVideo();
         }
-      }, 15000);
+      }, connectionTimeoutMs);
 
-      // Request media with lower quality constraints to improve performance
+      // Request media with optimized constraints for better performance and reliability
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: {
-          width: { ideal: 320 },
-          height: { ideal: 240 },
-          frameRate: { max: 15 }
+          width: { ideal: 320, max: 640 },
+          height: { ideal: 240, max: 480 },
+          frameRate: { ideal: 15, max: 24 }
         }, 
         audio: {
           echoCancellation: true,
-          noiseSuppression: true
+          noiseSuppression: true,
+          autoGainControl: true
         } 
       });
       
@@ -132,7 +136,7 @@ export default function Chat({ mode, onDisconnect, roomId }: ChatProps) {
           { urls: 'stun:stun2.l.google.com:19302' },
           { urls: 'stun:stun3.l.google.com:19302' },
           { urls: 'stun:stun4.l.google.com:19302' },
-          // Free TURN servers (limited capacity but better than nothing)
+          // Free TURN servers
           {
             urls: 'turn:openrelay.metered.ca:80',
             username: 'openrelayproject',
@@ -142,11 +146,17 @@ export default function Chat({ mode, onDisconnect, roomId }: ChatProps) {
             urls: 'turn:openrelay.metered.ca:443',
             username: 'openrelayproject',
             credential: 'openrelayproject'
+          },
+          {
+            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
           }
         ],
         iceCandidatePoolSize: 10
       };
       
+      // Create new RTCPeerConnection with optimized configuration
       peerConnection.current = new RTCPeerConnection(configuration);
 
       // Add local stream
@@ -167,6 +177,7 @@ export default function Chat({ mode, onDisconnect, roomId }: ChatProps) {
           // Clear the connection timeout
           if (connectionTimeout.current) {
             clearTimeout(connectionTimeout.current);
+            connectionTimeout.current = null;
           }
         }
       };
@@ -182,14 +193,23 @@ export default function Chat({ mode, onDisconnect, roomId }: ChatProps) {
         }
       };
 
+      // Log ICE gathering state changes
+      peerConnection.current.onicegatheringstatechange = () => {
+        console.log('ICE gathering state:', peerConnection.current?.iceGatheringState);
+      };
+
       // Handle connection state changes
       peerConnection.current.onconnectionstatechange = () => {
         console.log('Connection state:', peerConnection.current?.connectionState);
         if (peerConnection.current?.connectionState === 'connected') {
           setVideoStatus('connected');
           setShowChat(true); // Show chat once video is connected
+          
+          // Reset reconnect attempts on successful connection
+          reconnectAttempts.current = 0;
         } else if (peerConnection.current?.connectionState === 'failed' || 
-                  peerConnection.current?.connectionState === 'disconnected') {
+                  peerConnection.current?.connectionState === 'disconnected' ||
+                  peerConnection.current?.connectionState === 'closed') {
           setVideoStatus('failed');
           // Auto-reconnect if we haven't exceeded max attempts
           if (reconnectAttempts.current < maxReconnectAttempts) {
@@ -202,8 +222,18 @@ export default function Chat({ mode, onDisconnect, roomId }: ChatProps) {
       // Handle ICE connection state changes
       peerConnection.current.oniceconnectionstatechange = () => {
         console.log('ICE connection state:', peerConnection.current?.iceConnectionState);
-        if (peerConnection.current?.iceConnectionState === 'failed' || 
-            peerConnection.current?.iceConnectionState === 'disconnected') {
+        if (peerConnection.current?.iceConnectionState === 'connected' || 
+            peerConnection.current?.iceConnectionState === 'completed') {
+          setVideoStatus('connected');
+          setShowChat(true);
+          
+          // Clear the connection timeout
+          if (connectionTimeout.current) {
+            clearTimeout(connectionTimeout.current);
+            connectionTimeout.current = null;
+          }
+        } else if (peerConnection.current?.iceConnectionState === 'failed' || 
+                  peerConnection.current?.iceConnectionState === 'disconnected') {
           setVideoStatus('failed');
           // Auto-reconnect if we haven't exceeded max attempts
           if (reconnectAttempts.current < maxReconnectAttempts) {
@@ -225,6 +255,7 @@ export default function Chat({ mode, onDisconnect, roomId }: ChatProps) {
           } catch (error) {
             console.error('Error handling offer:', error);
             setVideoStatus('failed');
+            reconnectVideo();
           }
         }
       });
@@ -237,6 +268,7 @@ export default function Chat({ mode, onDisconnect, roomId }: ChatProps) {
           } catch (error) {
             console.error('Error handling answer:', error);
             setVideoStatus('failed');
+            reconnectVideo();
           }
         }
       });
@@ -248,6 +280,7 @@ export default function Chat({ mode, onDisconnect, roomId }: ChatProps) {
             await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
           } catch (error) {
             console.error('Error adding ICE candidate:', error);
+            // Don't fail immediately on ICE candidate errors as some may be expected
           }
         }
       });
@@ -260,19 +293,29 @@ export default function Chat({ mode, onDisconnect, roomId }: ChatProps) {
           try {
             const offer = await peerConnection.current.createOffer({
               offerToReceiveAudio: true,
-              offerToReceiveVideo: true
+              offerToReceiveVideo: true,
+              iceRestart: true // Enable ICE restart for better connection recovery
             });
             await peerConnection.current.setLocalDescription(offer);
             socket.emit('offer', { roomId, offer });
           } catch (error) {
             console.error('Error creating offer:', error);
             setVideoStatus('failed');
+            reconnectVideo();
           }
         }
       });
     } catch (err) {
       console.error('Error accessing media devices:', err);
       setVideoStatus('failed');
+      
+      // Try to reconnect with audio only if video fails
+      if (err instanceof DOMException && err.name === 'NotAllowedError') {
+        // User denied permission, don't auto-retry
+        console.log('User denied media permissions');
+      } else {
+        reconnectVideo();
+      }
     }
   };
 
@@ -284,11 +327,16 @@ export default function Chat({ mode, onDisconnect, roomId }: ChatProps) {
     // Clean up existing connection
     cleanupVideoConnection();
     
-    // Wait a moment before reconnecting
+    // Exponential backoff for reconnection attempts (300ms, 600ms, 1200ms, etc.)
+    const backoffTime = Math.min(300 * Math.pow(2, reconnectAttempts.current - 1), 2000);
+    
+    console.log(`Reconnecting in ${backoffTime}ms (attempt ${reconnectAttempts.current}/${maxReconnectAttempts})`);
+    
+    // Wait a moment before reconnecting with exponential backoff
     setTimeout(async () => {
       await setupVideoChat();
       setIsReconnecting(false);
-    }, 1000);
+    }, backoffTime);
   };
 
   const handleReply = (message: Message) => {
@@ -367,6 +415,7 @@ export default function Chat({ mode, onDisconnect, roomId }: ChatProps) {
                 <div className="text-center text-white">
                   <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mx-auto mb-4"></div>
                   <p>Connecting video...</p>
+                  <p className="text-xs mt-2 text-gray-300">This may take a moment</p>
                 </div>
               </div>
             )}
@@ -392,6 +441,9 @@ export default function Chat({ mode, onDisconnect, roomId }: ChatProps) {
                       </>
                     )}
                   </button>
+                  <p className="text-xs mt-4 text-gray-300">
+                    Attempt {reconnectAttempts.current} of {maxReconnectAttempts}
+                  </p>
                 </div>
               </div>
             )}
@@ -472,11 +524,11 @@ export default function Chat({ mode, onDisconnect, roomId }: ChatProps) {
                   <div>{message.text}</div>
                   <button 
                     onClick={() => handleReply(message)}
-                    className={`absolute ${message.sender === 'me' ? '-left-3' : '-right-3'} top-1/2 transform -translate-y-1/2
+                    className={`absolute ${message.sender === 'me' ? '-left-8' : '-right-8'} top-1/2 transform -translate-y-1/2
                       bg-white p-1.5 rounded-full shadow-md opacity-0 group-hover:opacity-100 transition-opacity hover:bg-gray-100`}
                     aria-label="Reply to message"
                   >
-                    <Reply size={14} className="text-gray-600" />
+                    <Reply size={16} className="text-gray-600" />
                   </button>
                 </div>
               </div>
